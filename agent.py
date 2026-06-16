@@ -18,7 +18,45 @@ Usage (once implemented):
     print(result["error"])   # None on success
 """
 
+import re
+
 from tools import search_listings, suggest_outfit, create_fit_card
+
+
+# ── parsing helpers ───────────────────────────────────────────────────────────
+
+def _parse_query(query: str) -> dict:
+    """Parse a user query into description, size, and max_price."""
+    parsed = {
+        "description": (query or "").strip(),
+        "size": None,
+        "max_price": None,
+    }
+
+    if not parsed["description"]:
+        return parsed
+
+    size_match = re.search(r"\bsize\s*([A-Za-z0-9/+-]+)\b", query, re.I)
+    if size_match:
+        parsed["size"] = size_match.group(1).strip()
+
+    price_match = re.search(r"\b(?:under|below|less than|up to)\s*\$?\s*(\d+(?:\.\d+)?)\b", query, re.I)
+    if not price_match:
+        price_match = re.search(r"\$\s*(\d+(?:\.\d+)?)\b", query)
+    if price_match:
+        try:
+            parsed["max_price"] = float(price_match.group(1))
+        except ValueError:
+            parsed["max_price"] = None
+
+    # Remove explicit size and price phrases from the description so search keywords stay focused.
+    clean_desc = re.sub(r"\bsize\s*[A-Za-z0-9/+-]+\b", "", parsed["description"], flags=re.I)
+    clean_desc = re.sub(r"\b(?:under|below|less than|up to)\s*\$?\s*\d+(?:\.\d+)?\b", "", clean_desc, flags=re.I)
+    clean_desc = re.sub(r"\$\s*\d+(?:\.\d+)?\b", "", clean_desc)
+    clean_desc = re.sub(r"\s+", " ", clean_desc).strip()
+    parsed["description"] = clean_desc or parsed["description"]
+
+    return parsed
 
 
 # ── session state ─────────────────────────────────────────────────────────────
@@ -92,9 +130,34 @@ def run_agent(query: str, wardrobe: dict) -> dict:
     Before writing code, complete the Planning Loop and State Management sections
     of planning.md — your implementation should match what you described there.
     """
-    # TODO: implement the planning loop
     session = _new_session(query, wardrobe)
-    session["error"] = "Planning loop not yet implemented."
+    parsed = _parse_query(query)
+    session["parsed"] = parsed
+
+    search_results = search_listings(
+        description=parsed["description"],
+        size=parsed["size"],
+        max_price=parsed["max_price"],
+    )
+    session["search_results"] = search_results
+
+    if not search_results:
+        session["error"] = (
+            "I couldn't find any listings that match that description and budget. "
+            "Try broadening the description, choosing a different size, or "
+            "increasing the budget."
+        )
+        return session
+
+    selected_item = search_results[0]
+    session["selected_item"] = selected_item
+
+    outfit_suggestion = suggest_outfit(selected_item, wardrobe)
+    session["outfit_suggestion"] = outfit_suggestion
+
+    fit_card = create_fit_card(outfit_suggestion, selected_item)
+    session["fit_card"] = fit_card
+
     return session
 
 

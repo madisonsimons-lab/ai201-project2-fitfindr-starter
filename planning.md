@@ -15,74 +15,110 @@ You must have at least 3 tools. The three required tools are listed — add any 
 ### Tool 1: search_listings
 
 **What it does:**
-<!-- Describe what this tool does in 1–2 sentences -->
+Filters the `listings.json` dataset for items that match the user's requested description, preferred size, and maximum budget. It uses the listing fields `title`, `description`, `category`, `style_tags`, `size`, `condition`, `price`, `colors`, `brand`, and `platform` to determine relevance.
 
 **Input parameters:**
-<!-- List each parameter, its type, and what it represents -->
-- `description` (str): ...
-- `size` (str): ...
-- `max_price` (float): ...
+- `description` (str): the search text the user provides describing the item they want, such as "vintage graphic tee" or "chunky sneakers".
+- `size` (str): the size preference from the user, such as "M", "S/M", "W30", "US 7", or a fit term like "baggy".
+- `max_price` (float): the highest price the user is willing to pay.
 
 **What it returns:**
-<!-- Describe the return value — what fields does a result contain? -->
+A list of listing dictionaries sorted by relevance. Each dictionary contains:
+- `id` (str)
+- `title` (str)
+- `description` (str)
+- `category` (str)
+- `style_tags` (list[str])
+- `size` (str)
+- `condition` (str)
+- `price` (float)
+- `colors` (list[str])
+- `brand` (str or None)
+- `platform` (str)
+
+The tool should return the top matches, up to 5 results, with the most relevant result first.
 
 **What happens if it fails or returns nothing:**
-<!-- What should the agent do if no listings match? -->
+If the search returns no matching listings, the agent stops the tool chain and returns a user-facing error message such as "I couldn't find any listings that match that description and budget. Try broadening the search, changing the size, or increasing the budget." It must not call `suggest_outfit` or `create_fit_card`.
 
 ---
 
 ### Tool 2: suggest_outfit
 
 **What it does:**
-<!-- Describe what this tool does in 1–2 sentences -->
+Chooses wardrobe pieces that complement the selected marketplace item. It compares the new item to the wardrobe by category, shared `style_tags`, and color compatibility, then describes how to wear the item with existing closet pieces.
 
 **Input parameters:**
-<!-- List each parameter, its type, and what it represents -->
-- `new_item` (dict): ...
-- `wardrobe` (dict): ...
+- `new_item` (dict): the selected listing object from `search_listings`.
+- `wardrobe` (dict): a wardrobe dictionary with an `items` list following the structure in `wardrobe_schema.json`.
 
 **What it returns:**
-<!-- Describe the return value -->
+A dictionary with:
+- `outfit_description` (str): a styling recommendation describing how to pair the new item with existing wardrobe pieces.
+- `matched_items` (list[dict]): one or more wardrobe items used in the suggestion, each containing `id`, `name`, `category`, `colors`, `style_tags`, and optional `notes`.
 
 **What happens if it fails or returns nothing:**
-<!-- What should the agent do if the wardrobe is empty or no outfit can be suggested? -->
+If the wardrobe is empty or no good matches are found, return `matched_items=[]` and a fallback `outfit_description` like "I couldn't find a good match in your current wardrobe — add more pieces and I can pair this item perfectly." The agent should still proceed to `create_fit_card` using this fallback text.
 
 ---
 
 ### Tool 3: create_fit_card
 
 **What it does:**
-<!-- Describe what this tool does in 1–2 sentences -->
+Generates a short, social-style caption that highlights the selected listing and the outfit recommendation, in the tone of a fit card or fashion caption.
 
 **Input parameters:**
-<!-- List each parameter, its type, and what it represents -->
-- `outfit` (...): ...
+- `outfit` (dict): the output from `suggest_outfit`, containing `outfit_description` and `matched_items`.
+- `new_item` (dict): the selected listing returned by `search_listings`.
 
 **What it returns:**
-<!-- Describe the return value -->
+A dictionary containing:
+- `fit_card` (str): a concise caption that frames the recommendation in stylish language.
 
 **What happens if it fails or returns nothing:**
-<!-- What should the agent do if the outfit data is incomplete? -->
+If `outfit` is missing or incomplete, return a safe fallback `fit_card` such as "I found a great piece — once you add more wardrobe details, I can pair it with your closet and create a fit card." This fallback should be included in the final response.
 
 ---
 
 ### Additional Tools (if any)
 
-<!-- Copy the block above for any tools beyond the required three -->
+No additional tools are required for the core FitFindr flow.
 
 ---
 
 ## Planning Loop
 
 **How does your agent decide which tool to call next?**
-<!-- Describe the logic your planning loop uses. What does it look at? What conditions change its behavior? How does it know when it's done? -->
+The planning loop follows a fixed sequence with conditional checks at each step:
+
+1. Parse the user query into structured values: `description`, `size`, and `max_price`.
+2. Call `search_listings(description, size, max_price)`.
+3. If `search_listings` returns an empty list, set `session['error']` and return immediately with a message asking the user to broaden the search, change size, or increase the budget. Do not call `suggest_outfit` or `create_fit_card`.
+4. Otherwise, set `session['search_results'] = results` and `session['selected_item'] = results[0]`.
+5. Call `suggest_outfit(new_item=session['selected_item'], wardrobe=wardrobe)`.
+6. If `suggest_outfit` returns `matched_items=[]` or an empty `outfit_description`, set `session['warning']` to a fallback wardrobe message but continue the flow.
+7. Set `session['outfit'] = suggest_outfit_result`.
+8. Call `create_fit_card(outfit=session['outfit'], new_item=session['selected_item'])`.
+9. Set `session['fit_card']` to the returned caption.
+10. Return the final response object containing `selected_item`, `outfit_suggestion`, `fit_card`, and any `error` or `warning`.
+
+The planner completes after `create_fit_card` succeeds, or earlier if the search result list is empty.
 
 ---
 
 ## State Management
 
 **How does information from one tool get passed to the next?**
-<!-- Describe how your agent stores and accesses state within a session. What data is tracked? How is it passed between tool calls? -->
+The agent keeps a session dictionary to pass data between tools. The session stores:
+- `query`: parsed user request values.
+- `search_results`: the list of listings returned by `search_listings`.
+- `selected_item`: the top listing from `search_results`.
+- `outfit`: the object returned by `suggest_outfit`.
+- `fit_card`: the caption returned by `create_fit_card`.
+- `error`: any early-stop error message.
+- `warning`: recoverable messages about weak wardrobe matching.
+
+After `search_listings`, `selected_item` and `search_results` are saved. After `suggest_outfit`, `outfit` is saved. After `create_fit_card`, `fit_card` is saved. If the wardrobe is empty, the agent should source `get_empty_wardrobe()` and allow `suggest_outfit` to return a fallback description.
 
 ---
 
@@ -92,58 +128,70 @@ For each tool, describe the specific failure mode you're handling and what the a
 
 | Tool | Failure mode | Agent response |
 |------|-------------|----------------|
-| search_listings | No results match the query | |
-| suggest_outfit | Wardrobe is empty | |
-| create_fit_card | Outfit input is missing or incomplete | |
+| search_listings | No results match the query | Return: "I couldn't find any listings that match that description and budget. Try broadening the description, choosing a different size, or increasing the budget." Stop the flow and do not call `suggest_outfit` or `create_fit_card`. |
+| suggest_outfit | Wardrobe is empty or no compatible items | Return `matched_items=[]` and `outfit_description` fallback text. Continue to `create_fit_card` so the user still receives a helpful response. |
+| create_fit_card | Outfit input is missing or incomplete | Return a fallback `fit_card` such as "I found a great piece — once you add more wardrobe details, I can pair it with your closet and create a fit card." Include this in the final response. |
 
 ---
 
 ## Architecture
 
-<!-- Draw a diagram of your agent showing how the components connect:
-     User input → Planning Loop → Tools (search_listings, suggest_outfit, create_fit_card)
-                                                                          ↕
-                                                                   State / Session
-     Show what triggers each tool, how state flows between them, and where error paths branch off.
-     ASCII art, a Mermaid diagram (https://mermaid.js.org/syntax/flowchart.html), or an embedded
-     sketch are all fine. You'll share this diagram with an AI tool when asking it to implement
-     the planning loop and each individual tool. -->
+```mermaid
+flowchart TD
+    User[User query] --> Planner[Planning Loop]
+    Planner --> Search[search_listings(description, size, max_price)]
+    Search -->|results=[]| Error[No listings found]
+    Error -->|return early| FinalError[Final response with guidance]
+    Search -->|results=[item,...]| Select[Set selected_item = results[0]]
+    Select --> Planner
+    Planner --> Suggest[suggest_outfit(new_item, wardrobe)]
+    Suggest -->|matched_items=[]| Warning[Set warning and use fallback description]
+    Warning --> Planner
+    Suggest -->|matched_items>0| Planner
+    Planner --> Create[create_fit_card(outfit, selected_item)]
+    Create --> Final[Final response with item, outfit, fit_card]
+    Planner --> Final
+```
+
+This diagram shows the normal flow from user query to search to outfit suggestion to fit card, the early error branch when no listings are found, and the recoverable wardrobe fallback path.
 
 ---
 
 ## AI Tool Plan
 
-<!-- For each part of the implementation below, describe:
-     - Which AI tool you plan to use (Claude, Copilot, ChatGPT, etc.)
-     - What you'll give it as input (which sections of this planning.md, your agent diagram)
-     - What you expect it to produce
-     - How you'll verify the output matches your spec before moving on
-
-     "I'll use AI to help me code" is not a plan.
-     "I'll give Claude my Tool 1 spec (inputs, return value, failure mode) and ask it to implement
-     search_listings() using load_listings() from the data loader — then test it against 3 queries
-     before trusting it" is a plan. -->
-
 **Milestone 3 — Individual tool implementations:**
+- For `search_listings`, I will use ChatGPT with the `Tool 1` section and the loader helper doc from `utils/data_loader.py`. I expect a function that uses `load_listings()` to filter by description text, size matching, and maximum price. I will verify that the function returns full listing dictionaries and handles empty results by returning `[]`.
+- For `suggest_outfit`, I will use ChatGPT with the `Tool 2` section and the wardrobe schema from `wardrobe_schema.json`. I expect a function that returns `{'outfit_description': str, 'matched_items': list}` and that it handles empty wardrobes or weak matches gracefully. I will verify by testing with both `get_example_wardrobe()` and `get_empty_wardrobe()`.
+- For `create_fit_card`, I will use ChatGPT with the `Tool 3` section and sample `outfit` / `new_item` payloads. I expect a function that returns a dictionary with `fit_card` and uses the listing title and outfit description in a friendly caption. I will verify by calling it directly with valid and incomplete inputs.
 
 **Milestone 4 — Planning loop and state management:**
+- I will use ChatGPT with the `## Planning Loop`, `## State Management`, and `## Architecture` sections. I expect a controller implementation that parses the query, calls `search_listings` first, stops early if there are no results, then calls `suggest_outfit`, then `create_fit_card`, and stores the session state at each step. I will verify by simulating an example query and ensuring the planner returns `selected_item`, `outfit_suggestion`, `fit_card`, and any error or warning messages.
 
 ---
 
 ## A Complete Interaction (Step by Step)
 
-Write out what a full user interaction looks like from start to finish — tool call by tool call. Use a specific example query.
-
 **Example user query:** "I'm looking for a vintage graphic tee under $30. I mostly wear baggy jeans and chunky sneakers. What's out there and how would I style it?"
 
 **Step 1:**
-<!-- What does the agent do first? Which tool is called? With what input? -->
+The agent parses the query into `description = "vintage graphic tee"`, `size = "M"` if provided, and `max_price = 30.0`, then calls `search_listings(description, size, max_price)`.
 
 **Step 2:**
-<!-- What happens next? What was returned from step 1? What tool is called now? -->
+`search_listings` loads `listings.json` and filters for listings whose `title`, `description`, or `style_tags` match the query keywords, whose `size` matches or includes the requested size, and whose `price <= 30.0`. It returns a ranked list of matching listings.
 
 **Step 3:**
-<!-- Continue until the full interaction is complete -->
+The planner selects the top result as `selected_item` and calls `suggest_outfit(new_item=selected_item, wardrobe=get_example_wardrobe())`.
+
+**Step 4:**
+`suggest_outfit` compares the selected listing with the wardrobe items using category compatibility, shared `style_tags`, and color harmony. It returns `outfit_description` and `matched_items` describing a suggested outfit.
+
+**Step 5:**
+The planner calls `create_fit_card(outfit=outfit_result, new_item=selected_item)`.
+
+**Step 6:**
+`create_fit_card` returns a short caption such as "Snagged this vintage graphic tee for under $30 — pairing it with my baggy jeans and chunky sneakers for an easy streetwear fit.".
 
 **Final output to user:**
-<!-- What does the user actually see at the end? -->
+A response containing the selected listing, why it was chosen, the outfit suggestion using the wardrobe, and a short fit card caption.
+
+> `get_example_wardrobe()` is used for testing and example output. `get_empty_wardrobe()` is the empty wardrobe template used when the user has not provided closet items yet.
